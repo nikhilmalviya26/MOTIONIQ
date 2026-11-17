@@ -63,3 +63,7 @@ Vehicle Detection and Alerts
 - Vehicle IDs are temporary and may change if a vehicle is hidden or leaves the camera view.
 - This project does not detect bombs or confirm security threats.
 MOTIONIQ – Detecting Vehicles. Monitoring Their Behaviour.
+
+## System Architecture
+
+![MOTIONIQ Architecture](assets/motioniq_architecture.png)
