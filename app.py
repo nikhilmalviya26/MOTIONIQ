@@ -1,4 +1,67 @@
+import os
+import math
+import tempfile
+import subprocess
+from collections import defaultdict, deque
 
+import cv2
+import streamlit as st
+import pandas as pd
+from ultralytics import YOLO
+
+st.set_page_config(page_title="MOTIONIQ", page_icon="🚘", layout="wide")
+st.title("🚘 MOTIONIQ")
+st.subheader("AI-Powered Vehicle Behaviour Analysis & Anomaly Monitoring")
+st.caption("Detects and tracks vehicles in uploaded footage and flags configured behaviour anomalies for human review. It does not detect bombs or determine malicious intent.")
+
+with st.sidebar:
+    st.header("Detection settings")
+    confidence = st.slider("Detection confidence", 0.10, 0.90, 0.35, 0.05)
+    stop_seconds = st.slider("Stationary duration threshold (seconds)", 2, 30, 5)
+    movement_threshold = st.slider("Movement tolerance (pixels)", 5, 80, 20, 5)
+    st.divider()
+    st.header("Restricted zone")
+    zone_enabled = st.checkbox("Enable restricted-zone monitoring", value=True)
+    st.caption("Define the rectangle as percentages of the video frame.")
+    zx1 = st.slider("Zone left (%)", 0, 95, 35)
+    zy1 = st.slider("Zone top (%)", 0, 95, 25)
+    zx2 = st.slider("Zone right (%)", 5, 100, 70)
+    zy2 = st.slider("Zone bottom (%)", 5, 100, 80)
+
+uploaded_file = st.file_uploader("Upload CCTV / traffic video", type=["mp4", "avi", "mov", "mkv"])
+st.info("Demo mode uses uploaded recordings. Live CCTV requires an authorized RTSP camera URL, network access and suitable deployment; this prototype is not connected to a government system.")
+
+@st.cache_resource
+def load_model():
+    return YOLO("yolo11n.pt")
+
+def inside_zone(cx, cy, rect):
+    x1, y1, x2, y2 = rect
+    return x1 <= cx <= x2 and y1 <= cy <= y2
+
+if uploaded_file and st.button("▶ Analyse footage", type="primary", use_container_width=True):
+    suffix = os.path.splitext(os.path.basename(uploaded_file.name))[1].lower() or ".mp4"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = os.path.join(temp_dir, "input" + suffix)
+        avi_path = os.path.join(temp_dir, "MOTIONIQ_annotated.avi")
+        mp4_path = os.path.join(temp_dir, "MOTIONIQ_result.mp4")
+        with open(input_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        cap = cv2.VideoCapture(input_path)
+        if not cap.isOpened():
+            st.error("Could not open this video. Try MP4 or AVI.")
+            st.stop()
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        if width <= 0 or height <= 0:
+            st.error("Video dimensions could not be read.")
+            st.stop()
+        if not fps or not math.isfinite(fps) or fps <= 0:
+            fps = 25.0
         rect = (
             int(min(zx1, zx2) / 100 * width),
             int(min(zy1, zy2) / 100 * height),
