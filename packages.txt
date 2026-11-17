@@ -1,5 +1,2 @@
-
-streamlit
-ultralytics
-opencv-python-headless
-lap>=0.5.2
+libgl1
+libglib2.0-0t64
