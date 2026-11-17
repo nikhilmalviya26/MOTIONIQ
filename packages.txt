@@ -2,4 +2,4 @@
 streamlit
 ultralytics
 opencv-python-headless
-lapx>=0.5.2
+lap>=0.5.2
