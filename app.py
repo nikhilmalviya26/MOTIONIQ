@@ -1,203 +1,128 @@
-import math
-import os
-import shutil
-import subprocess
-import tempfile
 
-import cv2
-import streamlit as st
-from ultralytics import YOLO
+        rect = (
+            int(min(zx1, zx2) / 100 * width),
+            int(min(zy1, zy2) / 100 * height),
+            int(max(zx1, zx2) / 100 * width),
+            int(max(zy1, zy2) / 100 * height),
+        )
+        writer = cv2.VideoWriter(avi_path, cv2.VideoWriter_fourcc(*"MJPG"), fps, (width, height))
+        if not writer.isOpened():
+            st.error("Could not create output video.")
+            st.stop()
 
-
-st.set_page_config(
-    page_title="MOTIONIQ",
-    page_icon="🚘",
-    layout="wide",
-)
-
-st.title("🚘 MOTIONIQ")
-st.subheader("AI-Powered Vehicle Behaviour Analysis")
-st.write("Detect, track and monitor vehicle behaviour from traffic video.")
-
-uploaded_file = st.file_uploader(
-    "Upload Traffic Video",
-    type=["mp4", "avi", "mov"],
-)
-
-if uploaded_file is not None and st.button("Analyse Video", type="primary"):
-    # Keep all temporary files available until the result has been read.
-    with tempfile.TemporaryDirectory() as temp_dir:
-        safe_filename = os.path.basename(uploaded_file.name)
-        input_path = os.path.join(temp_dir, safe_filename)
-
-        with open(input_path, "wb") as file:
-            file.write(uploaded_file.getbuffer())
+        model = load_model()
+        progress = st.progress(0)
+        status = st.empty()
+        preview = st.empty()
+        histories = defaultdict(deque)
+        stop_alerted, zone_alerted, all_ids = set(), set(), set()
+        alerts = []
+        processed = 0
 
         try:
-            st.info("Loading YOLO model...")
-            model = YOLO("yolo11n.pt")
-
-            cap = cv2.VideoCapture(input_path)
-            if not cap.isOpened():
-                st.error("Could not open this video. Please upload a valid video file.")
-                st.stop()
-
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-
-            if not fps or fps <= 0:
-                fps = 30.0
-
-            positions = {}
-            alerts = set()
-            all_ids = set()
-
-            progress = st.progress(0.0)
-            status = st.empty()
-
             results = model.track(
-                source=input_path,
-                conf=0.35,
-                classes=[2, 3, 5, 7],
-                tracker="bytetrack.yaml",
-                stream=True,
-                save=True,
-                project=temp_dir,
-                name="tracking",
-                exist_ok=True,
-                verbose=False,
+                source=input_path, conf=confidence, classes=[2, 3, 5, 7],
+                tracker="bytetrack.yaml", stream=True, save=False, verbose=False
             )
-
-            frame_count = 0
             for frame_no, result in enumerate(results):
-                frame_count = frame_no + 1
+                frame = result.orig_img.copy()
+                timestamp = frame_no / fps
+                if zone_enabled:
+                    cv2.rectangle(frame, rect[:2], rect[2:], (0, 165, 255), 2)
+                    cv2.putText(frame, "RESTRICTED ZONE", (rect[0], max(24, rect[1] - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 165, 255), 2)
 
                 if result.boxes is not None and result.boxes.id is not None:
                     boxes = result.boxes.xyxy.cpu().numpy()
-                    track_ids = result.boxes.id.int().cpu().tolist()
-
-                    for box, track_id in zip(boxes, track_ids):
+                    ids = result.boxes.id.int().cpu().tolist()
+                    classes = result.boxes.cls.int().cpu().tolist()
+                    for box, track_id, class_id in zip(boxes, ids, classes):
+                        x1, y1, x2, y2 = [int(v) for v in box]
+                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                         all_ids.add(track_id)
-                        x1, y1, x2, y2 = box
-                        center_x = (x1 + x2) / 2
-                        center_y = (y1 + y2) / 2
-                        current_time = frame_no / fps
+                        history = histories[track_id]
+                        history.append((timestamp, cx, cy))
+                        while history and timestamp - history[0][0] > stop_seconds + 2:
+                            history.popleft()
 
-                        if track_id not in positions:
-                            positions[track_id] = {
-                                "start": current_time,
-                                "x": center_x,
-                                "y": center_y,
-                            }
-                        else:
-                            data = positions[track_id]
-                            distance = math.hypot(
-                                center_x - data["x"],
-                                center_y - data["y"],
-                            )
+                        label = result.names.get(class_id, "vehicle")
+                        color = (40, 200, 40)
 
-                            if distance > 20:
-                                data["start"] = current_time
-                                data["x"] = center_x
-                                data["y"] = center_y
-                            elif current_time - data["start"] >= 5:
-                                alerts.add(track_id)
+                        if history and timestamp - history[0][0] >= stop_seconds:
+                            displacement = math.hypot(cx - history[0][1], cy - history[0][2])
+                            if displacement <= movement_threshold and track_id not in stop_alerted:
+                                stop_alerted.add(track_id)
+                                alerts.append({"Time (video sec)": round(timestamp, 1),
+                                               "Vehicle ID": track_id,
+                                               "Alert": "Potential prolonged stop",
+                                               "Details": f"Movement within {movement_threshold}px for about {stop_seconds}s"})
+                        if zone_enabled and inside_zone(cx, cy, rect) and track_id not in zone_alerted:
+                            zone_alerted.add(track_id)
+                            alerts.append({"Time (video sec)": round(timestamp, 1),
+                                           "Vehicle ID": track_id,
+                                           "Alert": "Restricted-zone entry",
+                                           "Details": "Vehicle centre entered configured zone"})
+                        if track_id in stop_alerted or track_id in zone_alerted:
+                            color = (0, 0, 255)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(frame, f"{label} ID:{track_id}", (x1, max(20, y1 - 7)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
+                writer.write(frame)
+                processed += 1
                 if total_frames > 0:
-                    progress.progress(min(frame_count / total_frames, 1.0))
-                status.write(f"Processing frame {frame_count}...")
+                    progress.progress(min(processed / total_frames, 1.0))
+                status.write(f"Processing frame {processed} of {total_frames or 'unknown'}")
+                if processed == 1 or processed % max(1, int(fps * 3)) == 0:
+                    preview.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Processing preview")
 
-            status.empty()
-            progress.progress(1.0)
+        except Exception as exc:
+            writer.release()
+            st.error(f"Video analysis failed: {exc}")
+            st.stop()
+        writer.release()
+        progress.progress(1.0)
+        status.success("Analysis complete.")
 
-            # Ultralytics saves the annotated video using the input filename.
-            output_dir = str(model.predictor.save_dir)
-            tracked_video_path = os.path.join(output_dir, safe_filename)
+        if not os.path.exists(avi_path) or os.path.getsize(avi_path) == 0:
+            st.error("Annotated output video was not generated.")
+            st.stop()
 
-            if not os.path.isfile(tracked_video_path):
-                # Fallback: locate a video file in the tracking output folder.
-                possible_videos = [
-                    os.path.join(output_dir, name)
-                    for name in os.listdir(output_dir)
-                    if name.lower().endswith((".mp4", ".avi", ".mov", ".mkv"))
-                ] if os.path.isdir(output_dir) else []
-
-                if possible_videos:
-                    tracked_video_path = possible_videos[0]
-                else:
-                    st.error("Tracking finished, but the annotated output video was not created.")
-                    st.stop()
-
-            st.success("Vehicle tracking completed.")
-
-            # Convert to browser-friendly H.264 MP4 for Streamlit playback.
-            mp4_path = os.path.join(temp_dir, "MOTIONIQ_result.mp4")
-            ffmpeg_path = shutil.which("ffmpeg")
-            if ffmpeg_path is None:
-                st.error("FFmpeg is not installed on the app server, so the result cannot be converted for browser playback.")
-                st.stop()
-
-            command = [
-                ffmpeg_path,
-                "-y",
-                "-i", tracked_video_path,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "23",
-                "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart",
-                "-an",
-                mp4_path,
-            ]
-
-            try:
-                conversion = subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-            except subprocess.CalledProcessError as error:
-                st.error("FFmpeg could not convert the annotated video. Exact server message:")
-                st.code(error.stderr or str(error))
-                st.stop()
-            except subprocess.TimeoutExpired:
-                st.error("Video conversion took longer than 5 minutes and was stopped. Try a shorter video.")
-                st.stop()
-
-            if not os.path.isfile(mp4_path) or os.path.getsize(mp4_path) == 0:
-                st.error("FFmpeg finished but did not create a valid MP4 output.")
-                st.stop()
-
-            with open(mp4_path, "rb") as video_file:
-                video_bytes = video_file.read()
-
-            st.subheader("Analysis Results")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Unique tracking IDs", len(all_ids))
-            col2.metric("Vehicles flagged for review", len(alerts))
-            col3.metric("Frames processed", frame_count)
-
-            if alerts:
-                st.warning(
-                    "Possible prolonged-stationary behaviour detected for tracking IDs: "
-                    + ", ".join(str(track_id) for track_id in sorted(alerts))
-                )
-                st.caption("These are rule-based alerts for human review, not proof of wrongdoing.")
-            else:
-                st.info("No prolonged-stationary behaviour was flagged by the current rule.")
-
-            st.subheader("Processed Video")
-            st.video(video_bytes, format="video/mp4")
-            st.download_button(
-                "Download MOTIONIQ Result",
-                data=video_bytes,
-                file_name="MOTIONIQ_result.mp4",
-                mime="video/mp4",
+        output_path = avi_path
+        conversion_warning = None
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", avi_path, "-c:v", "libx264",
+                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", mp4_path],
+                check=True, capture_output=True, text=True, timeout=180
             )
+            if os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 0:
+                output_path = mp4_path
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            conversion_warning = "H.264 conversion failed; using AVI output. " + str(exc)
+            if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+                conversion_warning += "\n" + exc.stderr[-1000:]
 
-        except Exception as error:
-            st.error("MOTIONIQ could not complete the analysis.")
-            st.exception(error)
+        st.header("MOTIONIQ analysis report")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Unique tracked IDs", len(all_ids))
+        col2.metric("Potential stop alerts", len(stop_alerted))
+        col3.metric("Restricted-zone alerts", len(zone_alerted))
+        col4.metric("Total alerts", len(alerts))
+        if conversion_warning:
+            st.warning(conversion_warning)
+        st.subheader("Alert history")
+        if alerts:
+            st.dataframe(pd.DataFrame(alerts), use_container_width=True, hide_index=True)
+        else:
+            st.success("No configured anomaly rules were triggered in this footage.")
+        st.subheader("Processed video")
+        st.video(output_path)
+        with open(output_path, "rb") as f:
+            video_bytes = f.read()
+        is_mp4 = output_path == mp4_path
+        st.download_button("⬇ Download MOTIONIQ result", video_bytes,
+                           file_name="MOTIONIQ_result.mp4" if is_mp4 else "MOTIONIQ_result.avi",
+                           mime="video/mp4" if is_mp4 else "video/x-msvideo",
+                           use_container_width=True)
+        st.caption("Alerts are rule-based indicators for human review, not proof of malicious intent. Tracker IDs are temporary and can change under occlusion or when a vehicle leaves view. This prototype processes uploaded video; it does not detect bombs, identify suspects, or transmit data to authorities.")
