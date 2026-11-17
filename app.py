@@ -117,20 +117,20 @@ if uploaded_file:
 
             mp4_path = os.path.join(temp_dir, "MOTIONIQ_result.mp4")
 
-         try:
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", avi_path,
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-an", mp4_path
-        ],
-        check=True,
-        capture_output=True,
-        text=True
-    )
-except subprocess.CalledProcessError as e:
-    st.error("FFmpeg conversion failed:")
-    st.code(e.stderr)
-    st.stop()
+           try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", avi_path,
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-an", mp4_path
+            ],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+    except subprocess.CalledProcessError as e:
+        st.error("FFmpeg conversion failed:")
+        st.code(e.stderr)
+        st.stop()
           
