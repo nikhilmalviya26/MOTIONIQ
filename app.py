@@ -117,32 +117,20 @@ if uploaded_file:
 
             mp4_path = os.path.join(temp_dir, "MOTIONIQ_result.mp4")
 
-            subprocess.run([
-                "ffmpeg", "-y", "-i", avi_path,
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-an", mp4_path
-            ], check=True, capture_output=True)
-
-            st.success("Analysis Completed!")
-
-            col1, col2, col3 = st.columns(3)
-
-            col1.metric("Total Tracked Vehicles", len(all_ids))
-            col2.metric("Stationary Alerts", len(alerts))
-            col3.metric("Frames Processed", frame_no + 1)
-
-            st.subheader("Vehicle Tracking Result")
-            st.video(mp4_path)
-
-            st.subheader("Possible Stationary Vehicle Alerts")
-
-            if alerts:
-                st.warning(f"Possible stationary vehicle IDs: {sorted(alerts)}")
-            else:
-                st.success("No stationary vehicle alerts detected.")
-
-            st.caption(
-                "Alerts are rule-based indicators for human review, "
-                "not confirmed parking violations or threat classifications."
-            )
+         try:
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", avi_path,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-an", mp4_path
+        ],
+        check=True,
+        capture_output=True,
+        text=True
+    )
+except subprocess.CalledProcessError as e:
+    st.error("FFmpeg conversion failed:")
+    st.code(e.stderr)
+    st.stop()
+          
