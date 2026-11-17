@@ -1,4 +1,4 @@
-
+import os
         rect = (
             int(min(zx1, zx2) / 100 * width),
             int(min(zy1, zy2) / 100 * height),
