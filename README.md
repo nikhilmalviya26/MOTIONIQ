@@ -66,4 +66,4 @@ MOTIONIQ – Detecting Vehicles. Monitoring Their Behaviour.
 
 ## System Architecture
 
-![MOTIONIQ Architecture](assets/motioniq_architecture.png)
+![MOTIONIQ Architecture](motioniq_architecture.png)
